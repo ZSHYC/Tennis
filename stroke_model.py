@@ -128,8 +128,8 @@ def load_data(directories, tag="left", single_view=False):   # 是否是单视�
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"文件 {file_path} 不存在。")
         
-        datalist = [json.loads(line.strip()) for line in open(file_path, "r").readlines()]
-        
+        with open(file_path, "r") as f:
+            datalist = [json.loads(line.strip()) for line in f.readlines()]
         
         tracks_data = {}   # 创建字典tracks_data，键为轨迹ID，值为该轨迹的所有数据点 
         for item in datalist:
@@ -189,8 +189,7 @@ def evaluate(train_data, test_data, catboost_regressor):
         all_positive_timestamps += list(train_data[train_data['event_cls'] == 1]["timestamp"])
         positive_timestamps = list(val[val['event_cls'] == 1]["timestamp"])
         val["timestamp"]= val["timestamp"].astype(np.int64)
-        # if threshold == 0.4:
-        #     val[["timestamp", "pred", "event_cls", "x", "y", "source_video"]].to_csv("val_0.4.csv", index=False)
+
         tp = 0
         tn = 0
         fp = 0
