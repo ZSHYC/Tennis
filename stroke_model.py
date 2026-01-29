@@ -271,7 +271,7 @@ def main():
     return best_threshold
 
 
-def predict(threshold=0.4):
+def predict(threshold=0.4):    # 如果单独调用 predict()，使用默认 0.4
     model_path = "stroke_model.cbm"  
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"模型文件 {model_path} 不存在。")
@@ -296,5 +296,5 @@ def predict(threshold=0.4):
 
 if __name__ == "__main__":
     best_threshold = main()
-    predict(best_threshold)  # 使用最佳阈值进行预测
+    predict(best_threshold)  # 训练模型并使用最佳阈值进行预测
 
