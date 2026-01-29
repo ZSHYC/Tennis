@@ -179,6 +179,14 @@ def train(train_data, test_data):
 def evaluate(train_data, test_data, catboost_regressor):
     test_data["pred"] = catboost_regressor.predict(test_data[get_feature_cols(PREV_WINDOW_NUM, AFTER_WINDOW_NUM)])
     output_cols = ["timestamp", "pred", "event_cls", "x", "y"]
+    
+    # 存储每个阈值的指标
+    thresholds = []
+    accuracies = []
+    recalls = []
+    precisions = []
+    f1_scores = []
+    
     for threshold in np.arange(0.1, 1, 0.1):
         print(f'===> threshold: {threshold}')
 
@@ -222,14 +230,26 @@ def evaluate(train_data, test_data, catboost_regressor):
         print(f'tp: {tp}, tn: {tn}, fp: {fp}, fn: {fn}, total: {tn + tp + fn + fp}')
 
         acc = (tn + tp) / (tn + tp + fn + fp)
-        recall = tp/(tp + fn)
-        if tp + fp == 0:
-            precision = 0
-        else:
-            precision = tp/(tp + fp)
-        print(f'accuracy: {acc}, recall: {recall}, precision: {precision}')
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+        
+        print(f'accuracy: {acc}, recall: {recall}, precision: {precision}, f1: {f1}')
+        
+        thresholds.append(threshold)
+        accuracies.append(acc)
+        recalls.append(recall)
+        precisions.append(precision)
+        f1_scores.append(f1)
+
+    # 选择最佳阈值（最大化F1-score）
+    best_idx = np.argmax(f1_scores)
+    best_threshold = thresholds[best_idx]
+    print(f'Best threshold: {best_threshold} with F1: {f1_scores[best_idx]}')
 
     print("roc", roc_auc_score(test_data['event_cls'], test_data['pred']))
+    
+    return best_threshold
 
 
 def main():
@@ -246,10 +266,12 @@ def main():
 
     catboost_regressor = train(train_data, test_data)
     catboost_regressor.save_model("stroke_model.cbm")
-    evaluate(train_data, test_data, catboost_regressor)
+    best_threshold = evaluate(train_data, test_data, catboost_regressor)
+    
+    return best_threshold
 
 
-def predict():
+def predict(threshold=0.4):
     model_path = "stroke_model.cbm"  
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"模型文件 {model_path} 不存在。")
@@ -266,14 +288,13 @@ def predict():
     test_data["pred"] = catboost_regressor.predict(test_data[get_feature_cols(PREV_WINDOW_NUM, AFTER_WINDOW_NUM)])
     test_data[["timestamp", "pred", "event_cls", "x", "y", "source_video"]].to_csv("predict.csv", index=False)
     
-    # 保存预测的落点数据（pred > 0.4的点）
-    threshold = 0.4
+    # 保存预测的落点数据（pred > threshold的点）
     predicted_bounces = test_data[test_data["pred"] > threshold][["timestamp", "x", "y", "pred", "source_video"]]
     predicted_bounces.to_csv("predicted_bounces.csv", index=False)
-    print(f"保存了 {len(predicted_bounces)} 个预测落点到 predicted_bounces.csv")
+    print(f"保存了 {len(predicted_bounces)} 个预测落点到 predicted_bounces.csv (threshold={threshold})")
 
 
 if __name__ == "__main__":
-    main()
-    predict()  # 取消注释来生成预测结果文件
+    best_threshold = main()
+    predict(best_threshold)  # 使用最佳阈值进行预测
 
