@@ -5,13 +5,8 @@ import os
 from catboost import CatBoostRegressor
 from sklearn.metrics import roc_auc_score, confusion_matrix
 
-TRAIN_DIR = "data/train"
-if not os.path.exists(TRAIN_DIR):
-    raise FileNotFoundError(f"训练数据目录 {TRAIN_DIR} 不存在，请检查路径。")
-
-TEST_DIR = "data/test"
-if not os.path.exists(TEST_DIR):
-    raise FileNotFoundError(f"测试数据目录 {TEST_DIR} 不存在，请检查路径。")
+# 数据文件路径
+DATA_FILE = "Tennis-Stroke-Analysis-Data/output/training_segment.csv"
 
 PREV_WINDOW_NUM = 2
 AFTER_WINDOW_NUM = 2
@@ -62,91 +57,61 @@ def __add_weight(pd_data, weight_map):   # 为数据添加权重，weight_map是
     return pd_data
 
 
-def __convert_to_dataframe(data, labels_data=[]):
-    pd_data = []
-    for index, item in enumerate(data):
-        item_timestamp = item["timestamp"]
-        if item_timestamp in labels_data:
-            label = 1
-        else:
-            label = 0
-        label = max(item.get("event_cls", 0), item.get("label_cls", 0), label)
-        if item.get("pos", None) is None:
-            next_index = -1    # 设置next_index为-1，作为标志位，如果最终next_index仍然是-1，说明没有找到后续的有效位置数据
-            for i in range(index + 1, index + 5):     # 从当前索引的下一个开始，往后最多搜索4个位置
-                if i >= len(data):     # 如果已经遍历到数据末尾，则跳出循环
-                    break
-                if data[i].get("pos", None) is not None: 
-                    next_index = i
-                    break
-            if next_index == -1:   # 如果循环结束后next_index仍是-1，说明在接下来的5个数据中都没找到有效位置，则跳过这个点
-                continue
-            last_data = pd_data[-1] 
-            next_item = data[next_index]
-
-            x = (last_data["x"] + next_item["pos"]["x"]) / (next_index - index + 1)   # 计算插值的X坐标，取前后已知点的平均值
-            y = (last_data["y"] + next_item["pos"]["y"]) / (next_index - index + 1)   # 计算插值的Y坐标，取前后已知点的平均值
-            # if y < 200:  # 只考虑近处的摄像头
-            #     label = 0
-            pd_data.append({
-                "timestamp": item["timestamp"],
-                "x": x,
-                "y": y,
-                "event_cls": label,
-                # "coord": 0,  # inserted  "coord": 0 表示这是插入/插值的数据
-                "video_file": item.get("video_file", "")
-            })
-        else:
-            y = item["pos"]["y"]
-            # if y < 200:  # 只考虑近处的摄像头
-            #     label = 0
-            pd_data.append({
-                "timestamp": item["timestamp"],
-                "x": item["pos"]["x"],
-                "y": item["pos"]["y"],
-                "event_cls": label,
-                # "coord": 1,  # real  "coord": 1 表示这是实际观测到的数据点
-                "video_file": item.get("video_file", "")
-            })
-    if len(pd_data) > 0:
-        pd_data = pd.DataFrame.from_dict(pd_data)
-        pd_data = __add_weight(pd_data, {1: 400, 0: 1})
-    return pd_data
-
-def load_data(directories, tag="left", single_view=False, shuffle=True):   # 是否是单视角，如果以后有多视角，设single_view=False。
-    for directory in directories:
-        if not os.path.exists(directory):
-            raise FileNotFoundError(f"目录 {directory} 不存在。")
+def load_data(file_path, shuffle=True):
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"数据文件 {file_path} 不存在。")
+    
+    # 1. 读取 CSV
+    print(f"Loading data from {file_path}")
+    df = pd.read_csv(file_path)
+    
+    # 2. 过滤掉未核对的数据 (is_checked == 0 的可能是未标注数据，视为脏数据丢弃)
+    if 'is_checked' in df.columns:
+        original_len = len(df)
+        df = df[df['is_checked'] == 1].copy()
+        print(f"Filtered unchecked data: {original_len} -> {len(df)}")
+    
+    # 3. 解析标签 (event_cls)
+    # hit_frames_global 格式可能是 "-1" 或 "49653" 或 "49653,51000"
+    def check_is_hit(row):
+        hit_str = str(row['hit_frames_global'])
+        if hit_str == "-1" or hit_str == "":
+            return 0
+        hits = hit_str.split(',')
+        # 如果当前帧号在击球帧列表中，则为正样本
+        return 1 if str(row['frame_index']) in hits else 0
+        
+    df['event_cls'] = df.apply(check_is_hit, axis=1)
+    
+    # 4. 特征工程 (必须按 traj_id 分组处理，否则会在不同轨迹交界处产生错误的差分特征)
+    # 先按 traj_id 和 frame_index 排序，确保时序正确
+    df = df.sort_values(by=['traj_id', 'frame_index'])
+    
     resdf = pd.DataFrame()
-    for directory in directories:
-        if single_view:
-            # 单视角：加载 bounce_train.json
-            file_path = os.path.join(directory, "bounce_train.json")
-        else:
-            # 多视角：加载 {tag}_bounce_train.json
-            file_path = os.path.join(directory, f"{tag}_bounce_train.json")
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"文件 {file_path} 不存在。")
-        
-        with open(file_path, "r") as f:
-            datalist = [json.loads(line.strip()) for line in f.readlines()]
-        
-        tracks_data = {}   # 创建字典tracks_data，键为轨迹ID，值为该轨迹的所有数据点 
-        for item in datalist:
-            track_id = item["track_id"]    # 获取每个的轨迹ID
-            if track_id not in tracks_data:   
-                tracks_data[track_id] = []    # 如果字典中没有该轨迹ID，则创建一个空列表，用于存储该轨迹的所有数据点
-            tracks_data[track_id].append(item)   # 将当前数据点添加到对应轨迹ID的列表中，便于按轨迹处理数据
+    
+    # 使用 groupby 对每个轨迹单独计算特征
+    # 注意：这里会比较耗时，但必须这样做以保证特征准确性
+    grouped = df.groupby('traj_id')
+    processed_list = []
+    
+    print("Processing features by trajectory group...")
+    for traj_id, group in grouped:
+        # 只有当轨迹长度足够计算窗口时才保留
+        if len(group) > PREV_WINDOW_NUM + AFTER_WINDOW_NUM:
+            processed_group = to_features(group)
+            processed_list.append(processed_group)
             
-        for track_id, track_data in tracks_data.items():
-            track_data = sorted(track_data, key=lambda x: x["timestamp"])
-            tmp = __convert_to_dataframe(track_data)
-            if len(tmp) > 0:
-                video_file = tmp["video_file"].iloc[0] if len(tmp) > 0 and "video_file" in tmp.columns else ""
-                tmp["source_video"] = os.path.join(directory, "video", video_file).replace("\\", "/")  # 统一路径分隔符
-                resdf = pd.concat([resdf, to_features(tmp)], ignore_index=True)
+    if len(processed_list) > 0:
+        resdf = pd.concat(processed_list, ignore_index=True)
+    else:
+        raise ValueError("没有足够的数据生成特征，请检查 traj_id 分组或窗口大小配置。")
+
+    # 6. 添加权重
+    resdf = __add_weight(resdf, {1: 800, 0: 1})
+    
     if shuffle:
         resdf = resdf.sample(frac=1, random_state=42).reset_index(drop=True)
+        
     return resdf
 
 def train(train_data, test_data):
@@ -209,48 +174,72 @@ def evaluate(train_data, test_data, catboost_regressor):
 
 
 def main():
-    # 获取训练和测试目录
-    train_dirs = [os.path.join(TRAIN_DIR, d) for d in os.listdir(TRAIN_DIR) if os.path.isdir(os.path.join(TRAIN_DIR, d)) and d.startswith("match")]
-    test_dirs = [os.path.join(TEST_DIR, d) for d in os.listdir(TEST_DIR) if os.path.isdir(os.path.join(TEST_DIR, d)) and d.startswith("match")]
+    if not os.path.exists(DATA_FILE):
+        print(f"Error: Dataset {DATA_FILE} not found.")
+        return None
+
+    # 1. 加载所有数据 (先不打乱，以便这一步处理完特征后再做分割)
+    # 注意：load_data 内部现在默认是 shuffle=True，但为了分割数据集，我们需要控制它
+    # 修改 load_data 的 shuffle 参数，或者在 split 之前处理
+    # 新版 load_data 若设为 False，返回的是按 traj_id 排序好的
+    all_data = load_data(DATA_FILE, shuffle=False)
     
-    # 加载训练和测试数据
-    train_data = load_data(train_dirs, single_view=True, shuffle=True)  # 训练集shuffle
-    test_data = load_data(test_dirs, single_view=True, shuffle=False)   # 测试集不shuffle，保持时序
+    print(f"Total data shape: {all_data.shape}, positive samples: {len(all_data[all_data['event_cls'] == 1])}")
     
-    print(f"Train data shape: {train_data.shape}, positive samples: {len(train_data[train_data['event_cls'] == 1])}")
-    print(f"Test data shape: {test_data.shape}, positive samples: {len(test_data[test_data['event_cls'] == 1])}")
+    # 2. 按轨迹(traj_id)进行训练/测试分割 (Group Split)
+    # 防止同一条轨迹的数据一部分在训练集，一部分在测试集，造成数据泄露
+    unique_traj_ids = all_data['traj_id'].unique()
+    np.random.seed(42)
+    np.random.shuffle(unique_traj_ids)
+    
+    split_idx = int(len(unique_traj_ids) * 0.8) # 80% 训练
+    train_ids = unique_traj_ids[:split_idx]
+    test_ids = unique_traj_ids[split_idx:]
+    
+    print(f"Splitting data: {len(train_ids)} trajectories for training, {len(test_ids)} trajectories for testing.")
+    
+    train_data = all_data[all_data['traj_id'].isin(train_ids)].copy()
+    test_data = all_data[all_data['traj_id'].isin(test_ids)].copy()
+    
+    # 3. 训练集需要打乱 (shuffle)
+    train_data = train_data.sample(frac=1, random_state=42).reset_index(drop=True)
+    # 测试集保持时序 (不打乱)，以便后续可能的时序分析，或者 evaluate 里的逻辑
+    # evaluate 函数其实并不严格依赖时序，因为它是逐点 predict，但保持有序是个好习惯
+    
+    print(f"Train set size: {len(train_data)}, Test set size: {len(test_data)}")
 
     catboost_regressor = train(train_data, test_data)
     catboost_regressor.save_model("stroke_model.cbm")
+    
     best_threshold = evaluate(train_data, test_data, catboost_regressor)
     
-    return best_threshold
+    return best_threshold, test_data
 
 
-def predict(threshold=0.4):    # 如果单独调用 predict()，使用默认 0.4
+def predict(test_data, threshold=0.4):
     model_path = "stroke_model.cbm"  
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"模型文件 {model_path} 不存在。")
     catboost_regressor = CatBoostRegressor()
     catboost_regressor.load_model(model_path)
-    # # 多视角
-    # test_data = pd.concat([
-    #     load_data([os.path.join(TRAIN_DIR, dirname) for dirname in ["20241121_184001"]], "left"),
-    #     load_data([os.path.join(TRAIN_DIR, dirname) for dirname in ["20241121_184001"]], "right"),
-    # ]).sample(frac=1).reset_index(drop=True)
-    # 单视角代码（修改为使用所有测试目录）
-    test_dirs = [os.path.join(TEST_DIR, d) for d in os.listdir(TEST_DIR) if os.path.isdir(os.path.join(TEST_DIR, d)) and d.startswith("match")]
-    test_data = load_data(test_dirs, single_view=True, shuffle=False)  # 预测时不shuffle，保持时序
+    
+    print(f"Running prediction on test set (size: {len(test_data)})...")
+
+    # 进行预测
     test_data["pred"] = catboost_regressor.predict(test_data[get_feature_cols(PREV_WINDOW_NUM, AFTER_WINDOW_NUM)])
-    test_data[["timestamp", "pred", "event_cls", "x", "y", "source_video"]].to_csv("predict.csv", index=False, encoding='utf-8')
+    
+    # 选择要保存的列
+    output_cols = ["frame_index", "timestamp", "pred", "event_cls", "x", "y"]
+        
+    test_data[output_cols].to_csv("predict.csv", index=False, encoding='utf-8')
     
     # 保存预测的落点数据（pred > threshold的点）
-    predicted_bounces = test_data[test_data["pred"] > threshold][["timestamp", "x", "y", "pred", "source_video"]]
+    predicted_bounces = test_data[test_data["pred"] > threshold][output_cols]
     predicted_bounces.to_csv("predicted_bounces.csv", index=False, encoding='utf-8')
     print(f"保存了 {len(predicted_bounces)} 个预测落点到 predicted_bounces.csv (threshold={threshold})")
 
 
 if __name__ == "__main__":
-    best_threshold = main()
-    predict(best_threshold)  # 训练模型并使用最佳阈值进行预测
-
+    best_threshold, test_data_with_features = main()
+    # 使用 main 中划分出来的测试集进行预测验证
+    predict(test_data_with_features, threshold=best_threshold)
