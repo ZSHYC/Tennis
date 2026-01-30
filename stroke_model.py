@@ -3,7 +3,8 @@ import json
 import numpy as np
 import os
 from catboost import CatBoostRegressor
-from sklearn.metrics import roc_auc_score, confusion_matrix
+from sklearn.metrics import roc_auc_score, confusion_matrix, precision_recall_curve, auc
+import matplotlib.pyplot as plt
 
 # 数据文件路径
 DATA_FILE = "Tennis-Stroke-Analysis-Data/output/training_segment.csv"
@@ -107,7 +108,7 @@ def load_data(file_path, shuffle=True):
         raise ValueError("没有足够的数据生成特征，请检查 traj_id 分组或窗口大小配置。")
 
     # 6. 添加权重
-    resdf = __add_weight(resdf, {1: 800, 0: 1})
+    resdf = __add_weight(resdf, {1: 40, 0: 1})
     
     if shuffle:
         resdf = resdf.sample(frac=1, random_state=42).reset_index(drop=True)
@@ -139,8 +140,9 @@ def evaluate(train_data, test_data, catboost_regressor):
     recalls = []
     precisions = []
     f1_scores = []
+    f_beta_scores = []  # 新增F-beta分数
     
-    for threshold in np.arange(0.1, 1, 0.1):
+    for threshold in np.arange(0.01, 0.99, 0.01):
         print(f'===> threshold: {threshold}')
 
         # 使用 sklearn 计算混淆矩阵
@@ -155,20 +157,47 @@ def evaluate(train_data, test_data, catboost_regressor):
         precision = tp / (tp + fp) if (tp + fp) > 0 else 0
         f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
         
-        print(f'accuracy: {acc}, recall: {recall}, precision: {precision}, f1: {f1}')
+        # 计算F-beta分数 (beta^2 = 3, 所以召回率权重是精确率的3倍)
+        beta_squared = 4
+        f_beta = (1 + beta_squared) * precision * recall / (beta_squared * precision + recall) if (beta_squared * precision + recall) > 0 else 0
+        
+        print(f'accuracy: {acc}, recall: {recall}, precision: {precision}, f1: {f1}, f-beta: {f_beta}')
         
         thresholds.append(threshold)
         accuracies.append(acc)
         recalls.append(recall)
         precisions.append(precision)
         f1_scores.append(f1)
+        f_beta_scores.append(f_beta)
 
-    # 选择最佳阈值（最大化F1-score）
-    best_idx = np.argmax(f1_scores)
+    # 选择最佳阈值（最大化F-beta分数，更重视召回率）
+    best_idx = np.argmax(f_beta_scores)
     best_threshold = thresholds[best_idx]
-    print(f'Best threshold: {best_threshold} with F1: {f1_scores[best_idx]}')
+    print(f'Best threshold: {best_threshold} with F-beta: {f_beta_scores[best_idx]} (F1: {f1_scores[best_idx]})')
 
     print("roc", roc_auc_score(test_data['event_cls'], test_data['pred']))
+    
+    # 计算AUC-PR
+    precision_curve, recall_curve, _ = precision_recall_curve(test_data['event_cls'], test_data['pred'])
+    auc_pr = auc(recall_curve, precision_curve)
+    print(f'AUC-PR: {auc_pr}')
+    
+    # 绘制PR曲线并保存
+    plt.figure(figsize=(8, 6))
+    plt.plot(recall_curve, precision_curve, label=f'PR Curve (AUC = {auc_pr:.3f})')
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.title('Precision-Recall Curve')
+    plt.legend()
+    plt.grid(True)
+    plt.savefig('pr_curve.png')
+    plt.close()
+    print("PR curve saved as pr_curve.png")
+    
+    # 保存最佳阈值到文件，供 predict.py 使用
+    with open('best_threshold.txt', 'w') as f:
+        f.write(str(best_threshold))
+    print(f"Best threshold saved to best_threshold.txt")
     
     return best_threshold
 
