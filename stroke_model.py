@@ -13,8 +13,8 @@ TEST_DIR = "data/test"
 if not os.path.exists(TEST_DIR):
     raise FileNotFoundError(f"测试数据目录 {TEST_DIR} 不存在，请检查路径。")
 
-PREV_WINDOW_NUM = 3
-AFTER_WINDOW_NUM = 3
+PREV_WINDOW_NUM = 2
+AFTER_WINDOW_NUM = 2
 
 def get_feature_cols(prev_window_num=PREV_WINDOW_NUM, after_window_num=AFTER_WINDOW_NUM):
     colnames_x = ['x_diff_{}'.format(i) for i in range(1, prev_window_num)] + \
@@ -41,7 +41,7 @@ def to_features(data, prev_window_num=PREV_WINDOW_NUM, after_window_num=AFTER_WI
     for i in range(1, after_window_num):
         data.loc[:, 'x_lag_inv_{}'.format(i)] = data['x'].shift(-i)   # data['x'].shift(-i)：向上移动i行，获取未来的值    x_lag_inv_i, y_lag_inv_i: 存储未来i个时间步长的坐标值
         data.loc[:, 'y_lag_inv_{}'.format(i)] = data['y'].shift(-i) 
-        data.loc[:, 'x_diff_inv_{}'.format(i)] = data['x_lag_inv_{}'.format(i)] - data['x']        # x_lag_inv_i, y_lag_inv_i: 存储未来i个时间步长的坐标值，利用未来信息（仅在特征工程中使用，实际预测时不可用）
+        data.loc[:, 'x_diff_inv_{}'.format(i)] = data['x_lag_inv_{}'.format(i)] - data['x']        # x_lag_inv_i, y_lag_inv_i: 存储未来i个时间步长的坐标值，利用未来信息（仅在特征工程中使用，实时预测时不可用）
         data.loc[:, 'y_diff_inv_{}'.format(i)] = data['y_lag_inv_{}'.format(i)] - data['y']
 
 
@@ -160,7 +160,7 @@ def train(train_data, test_data):
         eval_set=(test_data[get_feature_cols(PREV_WINDOW_NUM, AFTER_WINDOW_NUM)], test_data['event_cls']),  # 验证集
         use_best_model=True,                                             # 使用最佳模型
         sample_weight=train_data['weight'],                              # 样本权重
-        # early_stopping_rounds=100,                                    # 早停轮数（注释掉了）
+        early_stopping_rounds=100,                                    # 早停轮数（注释掉了）
     )
     return catboost_regressor
 
@@ -257,11 +257,11 @@ def predict(threshold=0.4):    # 如果单独调用 predict()，使用默认 0.4
     test_dirs = [os.path.join(TEST_DIR, d) for d in os.listdir(TEST_DIR) if os.path.isdir(os.path.join(TEST_DIR, d)) and d.startswith("match")]
     test_data = load_data(test_dirs, single_view=True, shuffle=False)  # 预测时不shuffle，保持时序
     test_data["pred"] = catboost_regressor.predict(test_data[get_feature_cols(PREV_WINDOW_NUM, AFTER_WINDOW_NUM)])
-    test_data[["timestamp", "pred", "event_cls", "x", "y", "source_video"]].to_csv("predict.csv", index=False)
+    test_data[["timestamp", "pred", "event_cls", "x", "y", "source_video"]].to_csv("predict.csv", index=False, encoding='utf-8')
     
     # 保存预测的落点数据（pred > threshold的点）
     predicted_bounces = test_data[test_data["pred"] > threshold][["timestamp", "x", "y", "pred", "source_video"]]
-    predicted_bounces.to_csv("predicted_bounces.csv", index=False)
+    predicted_bounces.to_csv("predicted_bounces.csv", index=False, encoding='utf-8')
     print(f"保存了 {len(predicted_bounces)} 个预测落点到 predicted_bounces.csv (threshold={threshold})")
 
 
