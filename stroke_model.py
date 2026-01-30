@@ -242,33 +242,14 @@ def main():
     
     best_threshold = evaluate(train_data, test_data, catboost_regressor)
     
-    return best_threshold, test_data
-
-
-def predict(test_data, threshold=0.4):
-    model_path = "stroke_model.cbm"  
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"模型文件 {model_path} 不存在。")
-    catboost_regressor = CatBoostRegressor()
-    catboost_regressor.load_model(model_path)
+    print("\n=" * 60)
+    print("训练完成！模型已保存到 stroke_model.cbm")
+    print(f"最佳阈值已保存到 best_threshold.txt: {best_threshold:.4f}")
+    print("\n要进行预测，请运行: python predict.py")
+    print("=" * 60)
     
-    print(f"Running prediction on test set (size: {len(test_data)})...")
-
-    # 进行预测
-    test_data["pred"] = catboost_regressor.predict(test_data[get_feature_cols(PREV_WINDOW_NUM, AFTER_WINDOW_NUM)])
-    
-    # 选择要保存的列
-    output_cols = ["frame_index", "timestamp", "pred", "event_cls", "x", "y"]
-        
-    test_data[output_cols].to_csv("predict.csv", index=False, encoding='utf-8')
-    
-    # 保存预测的落点数据（pred > threshold的点）
-    predicted_bounces = test_data[test_data["pred"] > threshold][output_cols]
-    predicted_bounces.to_csv("predicted_bounces.csv", index=False, encoding='utf-8')
-    print(f"保存了 {len(predicted_bounces)} 个预测落点到 predicted_bounces.csv (threshold={threshold})")
+    return best_threshold
 
 
 if __name__ == "__main__":
-    best_threshold, test_data_with_features = main()
-    # 使用 main 中划分出来的测试集进行预测验证
-    predict(test_data_with_features, threshold=best_threshold)
+    main()
